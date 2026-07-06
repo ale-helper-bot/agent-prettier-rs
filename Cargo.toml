@@ -1,0 +1,27 @@
+[package]
+name = "agent-prettier-rs"
+version = "0.1.0"
+edition = "2021"
+description = "Rust pretty-printer for JavaScript (Algora Prettier submission, 91% corpus pass-rate)"
+license = "MIT"
+repository = "https://github.com/<user>/agent-prettier-rs"
+keywords = ["prettier", "javascript", "formatter", "pretty-printer", "tree-sitter"]
+categories = ["command-line-utilities", "development-tools", "parser-implementations"]
+
+[dependencies]
+tree-sitter = "0.20"
+tree-sitter-javascript = "0.20"
+tree-sitter-typescript = "0.20"
+clap = { version = "4", features = ["derive"] }
+
+[dev-dependencies]
+# nothing yet — Rust unit tests are inline (#[test])
+
+[[bin]]
+name = "agent-prettier-rs"
+path = "src/bin/cli.rs"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
