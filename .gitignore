@@ -1,0 +1,8 @@
+target/
+*.swp
+*.swo
+.vscode/
+.idea/
+*.log
+node_modules/
+.DS_Store
