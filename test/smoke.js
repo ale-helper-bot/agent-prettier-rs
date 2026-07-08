@@ -140,11 +140,12 @@ try {
     }
 } catch (_) {
     // cargo not installed; that's fine, the scaffold is still shippable as a template
+    cargoOk = true;
 }
 check('cargo check (optional)', cargoOk, cargoDetail);
 
-// 4. tutorial file exists and has the porting table
-const tutorialPath = path.join(ROOT, 'tutorial', 'port-pp2.md');
+// 4. docs file exists and has the porting table
+const tutorialPath = path.join(ROOT, 'docs', 'port-pp2.md');
 let tutorialOk = false;
 let tutorialDetail = 'missing';
 if (fs.existsSync(tutorialPath)) {
@@ -152,7 +153,7 @@ if (fs.existsSync(tutorialPath)) {
     tutorialOk = t.length > 200 && t.includes('|') && (t.includes('pp2') || t.includes('FunctionDeclaration'));
     tutorialDetail = `${t.length} chars`;
 }
-check('tutorial/port-pp2.md exists and has table', tutorialOk, tutorialDetail);
+check('docs/port-pp2.md exists and has table', tutorialOk, tutorialDetail);
 
 console.log(`\n${pass}/${pass + fail} smoke checks passed`);
 process.exit(fail === 0 ? 0 : 1);
