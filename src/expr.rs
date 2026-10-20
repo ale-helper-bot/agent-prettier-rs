@@ -47,10 +47,15 @@ pub fn print_expression(node: Node<'_>, src: &str) -> Option<String> {
         "member_expression" => Some(print_member_expression(node, src)),
         "call_expression" => Some(print_call_expression(node, src)),
         "update_expression" => Some(print_update_expression(node, src)),
-        "assignment_expression" => Some(print_assignment_expression(node, src)),
-        "conditional_expression" => Some(print_conditional_expression(node, src)),
+        "assignment_expression" | "augmented_assignment_expression" => {
+            Some(print_assignment_expression(node, src))
+        }
+        "ternary_expression" | "conditional_expression" => {
+            Some(print_conditional_expression(node, src))
+        }
         "new_expression" => Some(print_new_expression(node, src)),
-        "array_expression" => Some(print_array_expression(node, src)),
+        "array" | "array_expression" => Some(print_array_expression(node, src)),
+        "subscript_expression" => Some(print_subscript_expression(node, src)),
         "template_string" => Some(print_template_string(node, src)),
         _ => None,
     }
@@ -105,29 +110,37 @@ pub fn print_unary_expression(node: Node<'_>, src: &str) -> String {
     format!("{} {}", op, arg)
 }
 
-/// `obj.prop`, `arr[0]`, `import.meta` — distinguishes `.` access from
-/// `[computed]` access by checking whether the property node is named
-/// `property` (dot) or computed via `child_by_field_name("computed") == true`.
+/// `obj.prop`, `import.meta` — static dot access. Computed access
+/// (`obj[key]`) is a separate `subscript_expression` node in the
+/// tree-sitter JavaScript grammar and is handled by
+/// [`print_subscript_expression`].
 pub fn print_member_expression(node: Node<'_>, src: &str) -> String {
     let obj = node
         .child_by_field_name("object")
         .map(|n| slice(src, n.start_byte(), n.end_byte()))
         .unwrap_or_default();
-    let prop_node = node.child_by_field_name("property");
-    let computed = node.child_by_field_name("computed");
-    match (prop_node, computed.map(|c| /* presence signals */ true)) {
-        (Some(p), Some(_)) => {
-            // Computed: `obj[key]` — slice includes the brackets.
-            let prop = slice(src, p.start_byte(), p.end_byte());
-            format!("{}[{}]", obj, prop)
-        }
-        (Some(p), None) => {
-            // Static: `obj.prop`
+    match node.child_by_field_name("property") {
+        Some(p) => {
             let prop = slice(src, p.start_byte(), p.end_byte());
             format!("{}.{}", obj, prop)
         }
-        _ => slice(src, node.start_byte(), node.end_byte()),
+        None => slice(src, node.start_byte(), node.end_byte()),
     }
+}
+
+/// `obj[key]`, `arr[0]` — computed access. In tree-sitter-javascript 0.20
+/// this is a `subscript_expression` with `object` and `index` fields, not a
+/// `member_expression`.
+pub fn print_subscript_expression(node: Node<'_>, src: &str) -> String {
+    let obj = node
+        .child_by_field_name("object")
+        .map(|n| slice(src, n.start_byte(), n.end_byte()))
+        .unwrap_or_default();
+    let index = node
+        .child_by_field_name("index")
+        .map(|n| slice(src, n.start_byte(), n.end_byte()))
+        .unwrap_or_default();
+    format!("{}[{}]", obj, index)
 }
 
 /// `f(x, y, z)`, `console.log()` — slice the callee and the argument list
@@ -181,32 +194,45 @@ pub fn print_update_expression(node: Node<'_>, src: &str) -> String {
 }
 
 /// `a = b`, `x += 1`, `obj[key] = val` — emit `<left> <op> <right>`.
+/// Simple assignment (`=`) has no `operator` field in tree-sitter-javascript
+/// 0.20; its operator is an anonymous child, so recover it from the source
+/// between the two operands. Augmented assignments expose the field directly.
 pub fn print_assignment_expression(node: Node<'_>, src: &str) -> String {
-    let left = node
-        .child_by_field_name("left")
+    let left_node = node.child_by_field_name("left");
+    let right_node = node.child_by_field_name("right");
+    let left = left_node
         .map(|n| slice(src, n.start_byte(), n.end_byte()))
         .unwrap_or_default();
     let op = node
         .child_by_field_name("operator")
         .map(|n| slice(src, n.start_byte(), n.end_byte()))
+        .or_else(|| match (left_node, right_node) {
+            (Some(l), Some(r)) if l.end_byte() <= r.start_byte() => {
+                Some(src[l.end_byte()..r.start_byte()].trim())
+            }
+            _ => None,
+        })
         .unwrap_or_default();
-    let right = node
-        .child_by_field_name("right")
+    let right = right_node
         .map(|n| slice(src, n.start_byte(), n.end_byte()))
         .unwrap_or_default();
     format!("{} {} {}", left, op, right)
 }
 
-/// `cond ? a : b` — emit in source order, preserving source whitespace
-/// inside the test/consequent/alternate slices.
+/// `cond ? a : b` — emit in source order. tree-sitter-javascript names the
+/// three operands `condition` / `consequence` / `alternative` (the acorn
+/// names `test` / `consequent` / `alternate` are accepted as a fallback).
 pub fn print_conditional_expression(node: Node<'_>, src: &str) -> String {
     let test = field(node, "test")
+        .or_else(|| field(node, "condition"))
         .map(|n| slice(src, n.start_byte(), n.end_byte()))
         .unwrap_or_default();
     let cons = field(node, "consequent")
+        .or_else(|| field(node, "consequence"))
         .map(|n| slice(src, n.start_byte(), n.end_byte()))
         .unwrap_or_default();
     let alt = field(node, "alternate")
+        .or_else(|| field(node, "alternative"))
         .map(|n| slice(src, n.start_byte(), n.end_byte()))
         .unwrap_or_default();
     format!("{} ? {} : {}", test, cons, alt)
@@ -250,7 +276,7 @@ mod tests {
     fn parse(src: &str) -> tree_sitter::Tree {
         let mut parser = Parser::new();
         parser
-            .set_language(&tree_sitter_javascript::language())
+            .set_language(tree_sitter_javascript::language())
             .expect("load JS grammar");
         parser.parse(src, None).expect("parse src")
     }
@@ -297,12 +323,12 @@ mod tests {
     }
 
     #[test]
-    fn member_expression_computed() {
+    fn subscript_expression_computed() {
         let src = "a[0];";
         let tree = parse(src);
         let n = first_expr(&tree, src);
-        assert_eq!(n.kind(), "member_expression");
-        assert_eq!(print_member_expression(n, src), "a[0]");
+        assert_eq!(n.kind(), "subscript_expression");
+        assert_eq!(print_subscript_expression(n, src), "a[0]");
     }
 
     #[test]
@@ -338,7 +364,7 @@ mod tests {
         let src = "a ? b : c;";
         let tree = parse(src);
         let n = first_expr(&tree, src);
-        assert_eq!(n.kind(), "conditional_expression");
+        assert_eq!(n.kind(), "ternary_expression");
         assert_eq!(print_conditional_expression(n, src), "a ? b : c");
     }
 
@@ -355,19 +381,13 @@ mod tests {
     fn array_expression_emits_bracketed_range() {
         let src = "var xs = [1, 2, 3];";
         let tree = parse(src);
-        // Drill past the variable declarator and initializer
         let root = tree.root_node();
-        let mut c = root.walk();
-        c.goto_first_child();
-        let decl_stmt = c.node();
-        let mut c2 = decl_stmt.walk();
-        c2.goto_first_child();
-        let decl = c2.node();
-        let mut c3 = decl.walk();
-        c3.goto_first_child();
-        let _id = c3.node();
-        c3.goto_next_sibling();
-        let arr = c3.node();
+        // program → declaration → declarator → value (the array node).
+        let decl_stmt = root.named_child(0).expect("declaration");
+        let declarator = decl_stmt.named_child(0).expect("declarator");
+        let arr = declarator
+            .child_by_field_name("value")
+            .expect("array initializer");
         assert_eq!(arr.kind(), "array");
         assert_eq!(print_array_expression(arr, src), "[1, 2, 3]");
     }
@@ -378,16 +398,11 @@ mod tests {
         let src = "var xs = [a, ...rest, b];";
         let tree = parse(src);
         let root = tree.root_node();
-        let mut c = root.walk();
-        c.goto_first_child();
-        let stmt = c.node();
-        let mut c2 = stmt.walk();
-        c2.goto_first_child();
-        let decl = c2.node();
-        let mut c3 = decl.walk();
-        c3.goto_first_child();
-        c3.goto_next_sibling();
-        let arr = c3.node();
+        let decl_stmt = root.named_child(0).expect("declaration");
+        let declarator = decl_stmt.named_child(0).expect("declarator");
+        let arr = declarator
+            .child_by_field_name("value")
+            .expect("array initializer");
         assert_eq!(arr.kind(), "array");
         assert_eq!(print_array_expression(arr, src), "[a, ...rest, b]");
     }
@@ -397,16 +412,11 @@ mod tests {
         let src = "var s = `hello world`;";
         let tree = parse(src);
         let root = tree.root_node();
-        let mut c = root.walk();
-        c.goto_first_child();
-        let stmt = c.node();
-        let mut c2 = stmt.walk();
-        c2.goto_first_child();
-        let decl = c2.node();
-        let mut c3 = decl.walk();
-        c3.goto_first_child();
-        c3.goto_next_sibling();
-        let tpl = c3.node();
+        let decl_stmt = root.named_child(0).expect("declaration");
+        let declarator = decl_stmt.named_child(0).expect("declarator");
+        let tpl = declarator
+            .child_by_field_name("value")
+            .expect("template initializer");
         assert_eq!(tpl.kind(), "template_string");
         assert_eq!(print_template_string(tpl, src), "`hello world`");
     }
@@ -416,16 +426,11 @@ mod tests {
         let src = "var s = `hi ${name}!`;";
         let tree = parse(src);
         let root = tree.root_node();
-        let mut c = root.walk();
-        c.goto_first_child();
-        let stmt = c.node();
-        let mut c2 = stmt.walk();
-        c2.goto_first_child();
-        let decl = c2.node();
-        let mut c3 = decl.walk();
-        c3.goto_first_child();
-        c3.goto_next_sibling();
-        let tpl = c3.node();
+        let decl_stmt = root.named_child(0).expect("declaration");
+        let declarator = decl_stmt.named_child(0).expect("declarator");
+        let tpl = declarator
+            .child_by_field_name("value")
+            .expect("template initializer");
         assert_eq!(tpl.kind(), "template_string");
         assert_eq!(print_template_string(tpl, src), "`hi ${name}!`");
     }

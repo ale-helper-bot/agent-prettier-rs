@@ -11,7 +11,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use rust_scaffold::{parse, cursor_dump};
+use agent_prettier_rs::{cursor_dump, parse};
 
 #[derive(ClapParser, Debug)]
 #[command(name = "rust-scaffold", version, about = "Tree-sitter AST dumper (Stage 1 scaffold for OPP-002 Prettier re-entry)")]
@@ -38,8 +38,8 @@ fn main() -> ExitCode {
 
     match args.dump.as_str() {
         "ast" => match parse(&src) {
-            Some(root) => {
-                for line in cursor_dump(root) {
+            Some(tree) => {
+                for line in cursor_dump(tree.root_node()) {
                     println!("{}", line);
                 }
                 ExitCode::SUCCESS

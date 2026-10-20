@@ -98,7 +98,7 @@ pub fn print_program(node: Node<'_>, src: &str) -> String {
 
 // ---------- handler internals ----------
 
-fn slice(node: Node<'_>, src: &str) -> &str {
+fn slice<'s>(node: Node<'_>, src: &'s str) -> &'s str {
     &src[node.start_byte()..node.end_byte()]
 }
 
@@ -235,22 +235,24 @@ mod tests {
     use crate::{parse, format_leaf, LeafFormat};
 
     fn format_program(src: &str) -> String {
-        let root = parse(src).expect("parse must succeed");
-        print_program(root, src)
+        let tree = parse(src).expect("parse must succeed");
+        print_program(tree.root_node(), src)
     }
 
     #[test]
     fn stage3_dispatch_returns_none_for_unknown() {
         // A `program` node is NOT a statement itself.
         let src = "const x = 1;";
-        let root = parse(src).unwrap();
+        let tree = parse(src).unwrap();
+        let root = tree.root_node();
         assert_eq!(print_statement(root, src), None);
     }
 
     #[test]
     fn stage3_lexical_declaration() {
         let src = "const x = 1;";
-        let root = parse(src).unwrap();
+        let tree = parse(src).unwrap();
+        let root = tree.root_node();
         let mut c = root.walk();
         c.goto_first_child(); // → lexical_declaration
         let stmt = c.node();
@@ -261,7 +263,8 @@ mod tests {
     #[test]
     fn stage3_expression_statement() {
         let src = "console.log('hi');";
-        let root = parse(src).unwrap();
+        let tree = parse(src).unwrap();
+        let root = tree.root_node();
         let mut c = root.walk();
         c.goto_first_child();
         let stmt = c.node();
@@ -272,7 +275,8 @@ mod tests {
     #[test]
     fn stage3_if_statement() {
         let src = "if (a) { b; }";
-        let root = parse(src).unwrap();
+        let tree = parse(src).unwrap();
+        let root = tree.root_node();
         let mut c = root.walk();
         c.goto_first_child();
         let out = print_statement(c.node(), src).expect("if_statement must be handled");
@@ -283,7 +287,8 @@ mod tests {
     #[test]
     fn stage3_return_with_value() {
         let src = "return 42;";
-        let root = parse(src).unwrap();
+        let tree = parse(src).unwrap();
+        let root = tree.root_node();
         let mut c = root.walk();
         c.goto_first_child();
         let out = print_statement(c.node(), src).expect("return_statement must be handled");
@@ -293,7 +298,8 @@ mod tests {
     #[test]
     fn stage3_block_recurses() {
         let src = "{ a; b; }";
-        let root = parse(src).unwrap();
+        let tree = parse(src).unwrap();
+        let root = tree.root_node();
         let mut c = root.walk();
         c.goto_first_child();
         let out = print_statement(c.node(), src).expect("statement_block must be handled");
@@ -317,7 +323,8 @@ mod tests {
     #[test]
     fn stage2_leaf_still_works_alongside_stage3() {
         let src = "foo";
-        let root = parse(src).unwrap();
+        let tree = parse(src).unwrap();
+        let root = tree.root_node();
         let mut c = root.walk();
         c.goto_first_child();
         let fmt = format_leaf(c.node(), src).expect("identifier must still be a leaf");
@@ -329,7 +336,8 @@ mod tests {
     #[test]
     fn stage3_for_statement() {
         let src = "for (let i = 0; i < n; i++) { f(i); }";
-        let root = parse(src).unwrap();
+        let tree = parse(src).unwrap();
+        let root = tree.root_node();
         let mut c = root.walk();
         c.goto_first_child();
         let out = print_statement(c.node(), src).expect("for_statement must be handled");
@@ -341,7 +349,8 @@ mod tests {
     #[test]
     fn stage3_while_statement() {
         let src = "while (cond) { step(); }";
-        let root = parse(src).unwrap();
+        let tree = parse(src).unwrap();
+        let root = tree.root_node();
         let mut c = root.walk();
         c.goto_first_child();
         let out = print_statement(c.node(), src).expect("while_statement must be handled");
@@ -352,7 +361,8 @@ mod tests {
     #[test]
     fn stage3_do_statement() {
         let src = "do { step(); } while (cond);";
-        let root = parse(src).unwrap();
+        let tree = parse(src).unwrap();
+        let root = tree.root_node();
         let mut c = root.walk();
         c.goto_first_child();
         let out = print_statement(c.node(), src).expect("do_statement must be handled");
@@ -363,7 +373,8 @@ mod tests {
     #[test]
     fn stage3_switch_statement() {
         let src = "switch (x) { case 1: a; break; default: b; }";
-        let root = parse(src).unwrap();
+        let tree = parse(src).unwrap();
+        let root = tree.root_node();
         let mut c = root.walk();
         c.goto_first_child();
         let out = print_statement(c.node(), src).expect("switch_statement must be handled");
@@ -375,7 +386,8 @@ mod tests {
     #[test]
     fn stage3_try_statement() {
         let src = "try { f(); } catch (e) { g(e); } finally { h(); }";
-        let root = parse(src).unwrap();
+        let tree = parse(src).unwrap();
+        let root = tree.root_node();
         let mut c = root.walk();
         c.goto_first_child();
         let out = print_statement(c.node(), src).expect("try_statement must be handled");
@@ -387,7 +399,8 @@ mod tests {
     #[test]
     fn stage3_throw_statement() {
         let src = "throw new Error('x');";
-        let root = parse(src).unwrap();
+        let tree = parse(src).unwrap();
+        let root = tree.root_node();
         let mut c = root.walk();
         c.goto_first_child();
         let out = print_statement(c.node(), src).expect("throw_statement must be handled");
@@ -398,7 +411,8 @@ mod tests {
     #[test]
     fn stage3_break_statement() {
         let src = "while (true) { if (done) break; }";
-        let root = parse(src).unwrap();
+        let tree = parse(src).unwrap();
+        let root = tree.root_node();
         let mut c = root.walk();
         // First child is the while_statement; recurse into its block → break_statement.
         c.goto_first_child();
@@ -413,7 +427,8 @@ mod tests {
     #[test]
     fn stage3_continue_statement() {
         let src = "for (let i = 0; i < n; i++) { if (skip) continue; }";
-        let root = parse(src).unwrap();
+        let tree = parse(src).unwrap();
+        let root = tree.root_node();
         let mut c = root.walk();
         c.goto_first_child(); // → for_statement
         c.goto_first_child(); // → statement_block
@@ -464,7 +479,8 @@ for (let k = 0; k < p; k++) { if (stop) break; }
     #[test]
     fn stage3_day16_debugger_statement() {
         let src = "debugger;";
-        let root = parse(src).unwrap();
+        let tree = parse(src).unwrap();
+        let root = tree.root_node();
         let mut c = root.walk();
         c.goto_first_child();
         let stmt = c.node();
@@ -475,7 +491,8 @@ for (let k = 0; k < p; k++) { if (stop) break; }
     #[test]
     fn stage3_day16_empty_statement() {
         let src = ";";
-        let root = parse(src).unwrap();
+        let tree = parse(src).unwrap();
+        let root = tree.root_node();
         let mut c = root.walk();
         c.goto_first_child();
         let stmt = c.node();
@@ -486,7 +503,8 @@ for (let k = 0; k < p; k++) { if (stop) break; }
     #[test]
     fn stage3_day16_import_statement() {
         let src = "import foo from 'bar';";
-        let root = parse(src).unwrap();
+        let tree = parse(src).unwrap();
+        let root = tree.root_node();
         let mut c = root.walk();
         c.goto_first_child();
         let stmt = c.node();
@@ -497,7 +515,8 @@ for (let k = 0; k < p; k++) { if (stop) break; }
     #[test]
     fn stage3_day16_export_statement() {
         let src = "export const x = 1;";
-        let root = parse(src).unwrap();
+        let tree = parse(src).unwrap();
+        let root = tree.root_node();
         let mut c = root.walk();
         c.goto_first_child();
         let stmt = c.node();
@@ -508,7 +527,8 @@ for (let k = 0; k < p; k++) { if (stop) break; }
     #[test]
     fn stage3_day16_labeled_statement() {
         let src = "outer: while (cond) { break outer; }";
-        let root = parse(src).unwrap();
+        let tree = parse(src).unwrap();
+        let root = tree.root_node();
         let mut c = root.walk();
         c.goto_first_child();
         let stmt = c.node();

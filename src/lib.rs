@@ -21,7 +21,7 @@
 //! labeled) are next-iteration work. See `statement.rs` module docs for the
 //! corpus pass-rate caveat.
 
-use tree_sitter::{Parser, Node};
+use tree_sitter::{Node, Parser, Tree};
 
 /// Stage 3 statement printers. See `statement.rs` for the dispatcher and the
 /// individual handler bodies.
@@ -54,15 +54,16 @@ impl LeafFormat {
 
 /// Parses JavaScript or TypeScript source code into a tree-sitter AST.
 ///
-/// Returns `Some(root_node)` on success, `None` if the parser fails to
-/// produce a tree (e.g., completely empty input).
-pub fn parse(src: &str) -> Option<Node<'_>> {
+/// Returns `Some(tree)` on success, `None` if the parser fails to produce a
+/// tree (e.g., completely empty input). The caller owns the returned `Tree`;
+/// call `tree.root_node()` to walk it.
+pub fn parse(src: &str) -> Option<Tree> {
     let mut parser = Parser::new();
     // tree-sitter-javascript is the right backend for .js files.
     // tree-sitter-typescript handles .ts/.tsx with embedded JS.
     // For Stage 1 we default to JS; Stage 2 will add a backend switch.
     parser
-        .set_language(&tree_sitter_javascript::LANGUAGE.into())
+        .set_language(tree_sitter_javascript::language())
         .expect("failed to load tree-sitter-javascript grammar");
     parser.parse(src, None)
 }
@@ -110,7 +111,7 @@ pub fn cursor_dump(root: Node<'_>) -> Vec<String> {
 /// Convenience: parse + dump in one call.
 pub fn parse_and_dump(src: &str) -> Vec<String> {
     match parse(src) {
-        Some(root) => cursor_dump(root),
+        Some(tree) => cursor_dump(tree.root_node()),
         None => Vec::new(),
     }
 }
@@ -162,7 +163,8 @@ pub fn format_leaf(node: Node<'_>, src: &str) -> Option<LeafFormat> {
 /// the input is a leaf this returns the same string. Used by Stage 2 tests
 /// as a smoke check that the printer is wired up.
 pub fn round_trip_simple(src: &str) -> Option<String> {
-    let root = parse(src)?;
+    let tree = parse(src)?;
+    let root = tree.root_node();
     let mut out = String::new();
     let mut cursor = root.walk();
     loop {
@@ -204,14 +206,37 @@ mod tests {
         let _ = dump;
     }
 
+    /// Descend from `program` → `expression_statement` → the expression node.
+    fn first_expression(root: Node<'_>) -> Node<'_> {
+        root.named_child(0)
+            .and_then(|stmt| stmt.named_child(0))
+            .expect("source must contain an expression")
+    }
+
+    /// Depth-first search for the first descendant of the given kind.
+    fn find_kind<'a>(node: Node<'a>, kind: &str) -> Option<Node<'a>> {
+        if node.kind() == kind {
+            return Some(node);
+        }
+        let mut cursor = node.walk();
+        if cursor.goto_first_child() {
+            loop {
+                if let Some(found) = find_kind(cursor.node(), kind) {
+                    return Some(found);
+                }
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+        }
+        None
+    }
+
     #[test]
     fn format_leaf_identifier() {
         let src = "foo";
-        let root = parse(src).unwrap();
-        // The root is `program` (non-leaf). Walk children to find identifier.
-        let mut cursor = root.walk();
-        cursor.goto_first_child();
-        let id_node = cursor.node();
+        let tree = parse(src).unwrap();
+        let id_node = first_expression(tree.root_node());
         let fmt = format_leaf(id_node, src).expect("identifier must be a leaf");
         assert_eq!(fmt, LeafFormat::Raw("foo".to_string()));
     }
@@ -219,30 +244,27 @@ mod tests {
     #[test]
     fn format_leaf_number() {
         let src = "42";
-        let root = parse(src).unwrap();
-        let mut cursor = root.walk();
-        cursor.goto_first_child();
-        let fmt = format_leaf(cursor.node(), src).expect("number must be a leaf");
+        let tree = parse(src).unwrap();
+        let node = first_expression(tree.root_node());
+        let fmt = format_leaf(node, src).expect("number must be a leaf");
         assert_eq!(fmt, LeafFormat::Raw("42".to_string()));
     }
 
     #[test]
     fn format_leaf_string() {
         let src = "'hello'";
-        let root = parse(src).unwrap();
-        let mut cursor = root.walk();
-        cursor.goto_first_child();
-        let fmt = format_leaf(cursor.node(), src).expect("string must be a leaf");
+        let tree = parse(src).unwrap();
+        let node = first_expression(tree.root_node());
+        let fmt = format_leaf(node, src).expect("string must be a leaf");
         assert_eq!(fmt, LeafFormat::Raw("'hello'".to_string()));
     }
 
     #[test]
     fn format_leaf_true_false_null() {
         for (src, expected) in [("true", "true"), ("false", "false"), ("null", "null")] {
-            let root = parse(src).unwrap();
-            let mut cursor = root.walk();
-            cursor.goto_first_child();
-            let fmt = format_leaf(cursor.node(), src).expect("boolean/null must be a leaf");
+            let tree = parse(src).unwrap();
+            let node = first_expression(tree.root_node());
+            let fmt = format_leaf(node, src).expect("boolean/null must be a leaf");
             assert_eq!(fmt, LeafFormat::Raw(expected.to_string()));
         }
     }
@@ -250,21 +272,33 @@ mod tests {
     #[test]
     fn format_leaf_regex() {
         let src = "/foo/g";
-        let root = parse(src).unwrap();
-        let mut cursor = root.walk();
-        cursor.goto_first_child();
-        let fmt = format_leaf(cursor.node(), src).expect("regex must be a leaf");
+        let tree = parse(src).unwrap();
+        let node = first_expression(tree.root_node());
+        let fmt = format_leaf(node, src).expect("regex must be a leaf");
         assert_eq!(fmt, LeafFormat::Raw("/foo/g".to_string()));
     }
 
     #[test]
     fn format_leaf_punctuation() {
-        for src in ["{", "}", "(", ")", "[", "]", ";", ",", "."] {
-            let root = parse(src).unwrap();
-            let mut cursor = root.walk();
-            cursor.goto_first_child();
-            let fmt = format_leaf(cursor.node(), src).expect("punctuation must be a leaf");
-            assert_eq!(fmt, LeafFormat::Raw(src.to_string()), "for {:?}", src);
+        // A lone punctuation character does not form a valid program, so use
+        // small snippets in which each punctuation node actually appears.
+        let cases = [
+            ("function f() { return 1; }", "{"),
+            ("function f() { return 1; }", "}"),
+            ("f(a);", "("),
+            ("f(a);", ")"),
+            ("a[0];", "["),
+            ("a[0];", "]"),
+            ("a;", ";"),
+            ("f(a, b);", ","),
+            ("a.b;", "."),
+        ];
+        for (src, punct) in cases {
+            let tree = parse(src).unwrap();
+            let node = find_kind(tree.root_node(), punct)
+                .unwrap_or_else(|| panic!("no {:?} node in {:?}", punct, src));
+            let fmt = format_leaf(node, src).expect("punctuation must be a leaf");
+            assert_eq!(fmt, LeafFormat::Raw(punct.to_string()), "for {:?}", src);
         }
     }
 }
